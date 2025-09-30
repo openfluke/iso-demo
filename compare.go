@@ -10,6 +10,14 @@ import (
 	"github.com/openfluke/paragon/v3"
 )
 
+func formatAll(out []float64) string {
+	parts := make([]string, len(out))
+	for i, v := range out {
+		parts[i] = fmt.Sprintf("%d:%.4f", i, v)
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
 func compareSingleModel(modelPath string) {
 	// Load MNIST once
 	images, labels, err := loadMNISTData("./public/mnist")
@@ -74,13 +82,11 @@ func compareSingleModel(modelPath string) {
 		nnGPU.WebGPUNative = false
 	} else {
 		fmt.Printf("✅ WebGPU initialized in %v\n", time.Since(startInit))
-	}
-
-	// Optional warmups to pay JIT/pipeline cost once
-	if nnGPU.WebGPUNative {
-		sample := images[firstIdx[0]]
-		nnGPU.Forward(sample)
-		_ = nnGPU.ExtractOutput()
+		// Warmup to pay JIT/pipeline cost once
+		if idx, ok := firstIdx[0]; ok {
+			nnGPU.Forward(images[idx])
+			_ = nnGPU.ExtractOutput()
+		}
 	}
 
 	// Run digits 0..9
@@ -106,12 +112,13 @@ func compareSingleModel(modelPath string) {
 		predGPU := argmax64(outGPU)
 
 		maxAbs, mae := driftMaxAndMAE(outCPU, outGPU)
-		cpuTop := formatTopK(outCPU, 3)
-		gpuTop := formatTopK(outGPU, 3)
 
 		fmt.Printf(
-			"Digit %d (idx=%d) → CPU pred=%d %s ⏱ %v | GPU pred=%d %s ⏱ %v | drift_max=%.6f mae=%.6f\n",
-			d, idx, predCPU, cpuTop, elapsedCPU, predGPU, gpuTop, elapsedGPU, maxAbs, mae,
+			"Digit %d (idx=%d)\n   CPU pred=%d %s ⏱ %v\n   GPU pred=%d %s ⏱ %v\n   drift_max=%.6f mae=%.6f\n",
+			d, idx,
+			predCPU, formatAll(outCPU), elapsedCPU,
+			predGPU, formatAll(outGPU), elapsedGPU,
+			maxAbs, mae,
 		)
 	}
 
