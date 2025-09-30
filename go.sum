@@ -1,4 +1,8 @@
+github.com/openfluke/paragon/v3 v3.1.4 h1:ZYGSi2PqNBScLN+8ImEGBg5ikNS+H5wR/M2Cjsm3HRI=
+github.com/openfluke/paragon/v3 v3.1.4/go.mod h1:6TRf4rLZrSd9HSlv6z6xWoD2/YMN/gqHSdhj3tMyRCI=
 github.com/openfluke/pilot v0.0.1 h1:L7O4yjFhv55qJXhUsJmUeoFkydTEGlgORtWMvhMVKQE=
 github.com/openfluke/pilot v0.0.1/go.mod h1:lk1GmnZH57lA2eHYQSl/hhlc7h/vSb/AZKC0uMySQPA=
 github.com/openfluke/pilot v0.0.2 h1:kIzzsle4bAHNtBDOaf2BsUVoAgk49HgFyUphNkw7skw=
 github.com/openfluke/pilot v0.0.2/go.mod h1:lk1GmnZH57lA2eHYQSl/hhlc7h/vSb/AZKC0uMySQPA=
+github.com/openfluke/webgpu v0.0.1 h1:hfpOT+sz36eWUCD+pyzSal2TixyCABtXNcBEr9psCd4=
+github.com/openfluke/webgpu v0.0.1/go.mod h1:072J6eEkBj9KgFzMY1RMgscUnu3EfTZsQABObSMZy1c=
