@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -11,7 +12,18 @@ import (
 func RegisterUpload(app *fiber.App, baseDir string) {
 	reportsDir := filepath.Join(baseDir, "reports")
 
+	// Ensure baseDir and reportsDir exist up front
+	_ = os.MkdirAll(baseDir, 0755)
+	_ = os.MkdirAll(reportsDir, 0755)
+
 	app.Post("/upload", func(c *fiber.Ctx) error {
+		// Safety: make sure the dir still exists (e.g., if it was deleted)
+		if err := os.MkdirAll(reportsDir, 0755); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "failed to create reports dir: " + err.Error(),
+			})
+		}
+
 		// single file field "file"
 		fh, err := c.FormFile("file")
 		if err != nil {
@@ -23,7 +35,6 @@ func RegisterUpload(app *fiber.App, baseDir string) {
 		// optional "name" param overrides the filename
 		name := c.FormValue("name")
 		if name == "" {
-			// default to timestamp + original name (avoid overwriting)
 			name = fmt.Sprintf("%d_%s", time.Now().Unix(), fh.Filename)
 		}
 
@@ -40,7 +51,7 @@ func RegisterUpload(app *fiber.App, baseDir string) {
 		})
 	})
 
-	// also expose /reports statically if present (directory browsing on)
+	// Always expose /reports (directory browsing on)
 	app.Static("/reports", reportsDir, fiber.Static{
 		Browse: true,
 	})
