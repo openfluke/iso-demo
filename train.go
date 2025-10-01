@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -50,7 +51,6 @@ func runTrainMenu() {
 
 	var chosen []string
 	if mode == "1" {
-		// choose a single model
 		fmt.Println("\nAvailable models:")
 		for i, m := range models {
 			fmt.Printf("%d) %s\n", i+1, m)
@@ -69,11 +69,10 @@ func runTrainMenu() {
 		}
 		chosen = []string{models[idx-1]}
 	} else {
-		// all models
 		chosen = models
 	}
 
-	// Strategy: epochs vs target score
+	// Strategy
 	fmt.Println("\nTraining strategy:")
 	fmt.Println("1) Train N epochs")
 	fmt.Println("2) Train until ADHD score ≥ target% (with max epochs)")
@@ -134,7 +133,6 @@ func runTrainMenu() {
 		maxEpochs = mep
 	}
 
-	// Run training
 	startAll := time.Now()
 	for i, name := range chosen {
 		modelPath := filepath.Join(modelDir, name)
@@ -155,7 +153,22 @@ func runTrainMenu() {
 
 // ─────────────────────────── CORE ───────────────────────────
 
-// load+rebuild a model as float32 with correct shapes/acts, then load weights
+// silence stdout during f(); restores after
+func withSilencedStdout(f func()) {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, r)
+		close(done)
+	}()
+	f()
+	_ = w.Close()
+	<-done
+	os.Stdout = old
+}
+
 func loadFloat32Model(modelPath string) (*paragon.Network[float32], error) {
 	loaded, err := paragon.LoadNamedNetworkFromJSONFile(modelPath)
 	if err != nil {
@@ -166,7 +179,6 @@ func loadFloat32Model(modelPath string) (*paragon.Network[float32], error) {
 		return nil, fmt.Errorf("not float32: %T", loaded)
 	}
 
-	// derive shapes/acts/trainable
 	shapes := make([]struct{ Width, Height int }, len(tmp.Layers))
 	acts := make([]string, len(tmp.Layers))
 	trains := make([]bool, len(tmp.Layers))
@@ -189,7 +201,7 @@ func loadFloat32Model(modelPath string) (*paragon.Network[float32], error) {
 	return nn, nil
 }
 
-// silent ADHD score (no prints). Mirrors evaluateFullNetwork but quiet.
+// quiet ADHD score: no printing
 func evalADHDScore[T paragon.Numeric](nn *paragon.Network[T], inputs, targets [][][]float64) float64 {
 	expected := make([]float64, len(inputs))
 	actual := make([]float64, len(inputs))
@@ -220,9 +232,7 @@ func withGPU[T paragon.Numeric](nn *paragon.Network[T], warm [][][]float64) (cle
 	return func() { nn.CleanupOptimizedGPU() }, true
 }
 
-// Train a single model for fixed N epochs; saves back to disk.
 func trainModelEpochs(modelPath string, epochs int, lr float64) error {
-	// Load data
 	images, labels, err := loadMNISTData("./public/mnist")
 	if err != nil {
 		return fmt.Errorf("load MNIST: %w", err)
@@ -234,16 +244,16 @@ func trainModelEpochs(modelPath string, epochs int, lr float64) error {
 		return err
 	}
 
-	// GPU path (optional; Train uses whatever your engine uses internally)
 	cleanup, _ := withGPU(nn, trainInputs)
 	defer cleanup()
 
 	fmt.Printf("🧠 Training %s for %d epoch(s) @ lr=%.4f …\n", filepath.Base(modelPath), epochs, lr)
 	start := time.Now()
+	//withSilencedStdout(func() {
 	nn.Train(trainInputs, trainTargets, epochs, lr, false, float32(2), float32(-2))
+	//})
 	fmt.Printf("⏱ Training time: %v\n", time.Since(start))
 
-	// quick post-train scores
 	trainScore := evalADHDScore(nn, trainInputs, trainTargets)
 	testScore := evalADHDScore(nn, testInputs, testTargets)
 	fmt.Printf("🎯 ADHD scores → Train: %.4f%% | Test: %.4f%%\n", trainScore, testScore)
@@ -255,7 +265,6 @@ func trainModelEpochs(modelPath string, epochs int, lr float64) error {
 	return nil
 }
 
-// Train until score ≥ target or maxEpochs reached; saves back to disk.
 func trainModelUntilScore(modelPath string, targetPct float64, maxEpochs int, lr float64) error {
 	images, labels, err := loadMNISTData("./public/mnist")
 	if err != nil {
@@ -280,10 +289,11 @@ func trainModelUntilScore(modelPath string, targetPct float64, maxEpochs int, lr
 
 	for ep := 1; ep <= maxEpochs; ep++ {
 		epStart := time.Now()
+		//withSilencedStdout(func() {
 		nn.Train(trainInputs, trainTargets, 1, lr, false, float32(2), float32(-2))
+		//})
 		epDur := time.Since(epStart)
 
-		// Evaluate (quiet)
 		trainScore := evalADHDScore(nn, trainInputs, trainTargets)
 		testScore := evalADHDScore(nn, testInputs, testTargets)
 		if testScore > best {
