@@ -1,0 +1,383 @@
+package main
+
+import (
+	"bytes"
+	"crypto/md5"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/openfluke/paragon/v3"
+)
+
+type TelemetrySource string
+
+const (
+	SourceNative    TelemetrySource = "native"
+	SourceWASMBun   TelemetrySource = "wasm-bun"
+	SourceWASMIonic TelemetrySource = "wasm-ionic"
+)
+
+type TelemetryReport struct {
+	Version    string          `json:"version"` // schema version
+	Source     TelemetrySource `json:"source"`  // native | wasm-bun | wasm-ionic
+	MachineID  string          `json:"machine_id"`
+	System     SystemInfo      `json:"system_info"`
+	FromHost   string          `json:"from_host"` // http://ip:port of the model host
+	ModelsUsed []string        `json:"models_used"`
+	Samples    []int           `json:"samples"` // digits 0..9, index used
+	StartedAt  time.Time       `json:"started_at"`
+	EndedAt    time.Time       `json:"ended_at"`
+	Notes      string          `json:"notes,omitempty"`
+	PerModel   []ModelRun      `json:"per_model"`
+}
+
+type ModelRun struct {
+	ModelFile        string            `json:"model_file"`
+	WebGPUInitOK     bool              `json:"webgpu_init_ok"`
+	WebGPUInitTimeMS float64           `json:"webgpu_init_time_ms"`
+	CPU              []SampleTiming    `json:"cpu"` // per digit
+	GPU              []SampleTiming    `json:"gpu"` // per digit (may be CPU fallback if GPU init failed)
+	Drift            []DriftMetrics    `json:"drift"`
+	Summary          map[string]any    `json:"summary,omitempty"`
+	Meta             map[string]string `json:"meta,omitempty"`
+}
+
+type SampleTiming struct {
+	Digit     int     `json:"digit"`
+	Idx       int     `json:"idx"`
+	ElapsedMS float64 `json:"elapsed_ms"`
+	Pred      int     `json:"pred"`
+	Top1Score float64 `json:"top1_score"`
+}
+
+type DriftMetrics struct {
+	Digit  int     `json:"digit"`
+	Idx    int     `json:"idx"`
+	MaxAbs float64 `json:"max_abs"`
+	MAE    float64 `json:"mae"`
+}
+
+type modelManifest struct {
+	ID       string `json:"id"`
+	Filename string `json:"filename"`
+}
+
+// ---- public API ----
+
+// Pull models from host, run telemetry, save local JSON, and push back.
+func RunTelemetryPipeline(hostBase string, source TelemetrySource) (string, error) {
+	// 1) fetch manifest and download models
+	modelDirLocal := filepath.Join("public", "models_remote")
+	if err := os.MkdirAll(modelDirLocal, 0755); err != nil {
+		return "", err
+	}
+
+	manifest, err := fetchManifest(hostBase)
+	if err != nil {
+		return "", fmt.Errorf("fetch manifest: %w", err)
+	}
+	if len(manifest) == 0 {
+		return "", fmt.Errorf("manifest empty at %s", hostBase)
+	}
+
+	var modelFiles []string
+	for _, m := range manifest {
+		if m.Filename == "" {
+			continue
+		}
+		url := strings.TrimRight(hostBase, "/") + "/models/" + m.Filename
+		dst := filepath.Join(modelDirLocal, m.Filename)
+		if err := httpDownload(url, dst); err != nil {
+			return "", fmt.Errorf("download %s: %w", m.Filename, err)
+		}
+		modelFiles = append(modelFiles, dst)
+	}
+
+	// 2) collect system info & machine id
+	sys := Collect()
+	machineID := hashSystemInfo(sys)
+
+	// 3) prepare samples: first index per digit (0..9)
+	images, labels, err := loadMNISTData("./public/mnist")
+	if err != nil {
+		return "", fmt.Errorf("load mnist: %w", err)
+	}
+	firstIdx := firstIndexPerDigit(labels)
+	var digits []int
+	for d := 0; d <= 9; d++ {
+		digits = append(digits, d)
+	}
+
+	// 4) run for each model
+	start := time.Now()
+	var per []ModelRun
+	for _, mf := range modelFiles {
+		mr, err := runModelTelemetry(mf, images, firstIdx)
+		if err != nil {
+			fmt.Printf("⚠️  model %s: %v\n", filepath.Base(mf), err)
+			continue
+		}
+		per = append(per, mr)
+	}
+	end := time.Now()
+
+	report := TelemetryReport{
+		Version:    "1.0.0",
+		Source:     source,
+		MachineID:  machineID,
+		System:     sys,
+		FromHost:   hostBase,
+		ModelsUsed: baseNames(modelFiles),
+		Samples:    digits,
+		StartedAt:  start.UTC(),
+		EndedAt:    end.UTC(),
+		PerModel:   per,
+	}
+
+	// 5) save locally
+	outDir := filepath.Join("public", "reports_local")
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return "", err
+	}
+	fn := fmt.Sprintf("telemetry_%s_%d.json", machineID, time.Now().Unix())
+	localPath := filepath.Join(outDir, fn)
+	if err := writeJSON(localPath, report); err != nil {
+		return "", err
+	}
+
+	// 6) push back to host (multipart POST /upload)
+	if err := uploadFile(hostBase, localPath, fn); err != nil {
+		return "", fmt.Errorf("push report: %w", err)
+	}
+
+	return localPath, nil
+}
+
+// ---- internals ----
+
+func runModelTelemetry(modelPath string, images [][][]float64, firstIdx map[int]int) (ModelRun, error) {
+	// Load saved network (float32)
+	loaded, err := paragon.LoadNamedNetworkFromJSONFile(modelPath)
+	if err != nil {
+		return ModelRun{}, fmt.Errorf("load: %w", err)
+	}
+	tmp, ok := loaded.(*paragon.Network[float32])
+	if !ok {
+		return ModelRun{}, fmt.Errorf("not float32: %T", loaded)
+	}
+
+	// Rebuild fresh network to ensure GPU-safe buffers
+	shapes := make([]struct{ Width, Height int }, len(tmp.Layers))
+	acts := make([]string, len(tmp.Layers))
+	trains := make([]bool, len(tmp.Layers))
+	for i, L := range tmp.Layers {
+		shapes[i] = struct{ Width, Height int }{L.Width, L.Height}
+		a := "linear"
+		if L.Height > 0 && L.Width > 0 && L.Neurons[0][0] != nil {
+			a = L.Neurons[0][0].Activation
+		}
+		acts[i], trains[i] = a, true
+	}
+	nnCPU, _ := paragon.NewNetwork[float32](shapes, acts, trains)
+	state, _ := tmp.MarshalJSONModel()
+	_ = nnCPU.UnmarshalJSONModel(state)
+
+	// Clone for GPU
+	nnGPU, _ := paragon.NewNetwork[float32](shapes, acts, trains)
+	_ = nnGPU.UnmarshalJSONModel(state)
+	nnGPU.WebGPUNative = true
+
+	var gpuInitOK bool
+	startInit := time.Now()
+	if err := nnGPU.InitializeOptimizedGPU(); err != nil {
+		gpuInitOK = false
+		nnGPU.WebGPUNative = false
+	} else {
+		gpuInitOK = true
+		// warmup pay cost once (pick any sample)
+		if idx, ok := firstIdx[0]; ok {
+			nnGPU.Forward(images[idx])
+			_ = nnGPU.ExtractOutput()
+		}
+		defer nnGPU.CleanupOptimizedGPU()
+	}
+	initMS := float64(time.Since(startInit).Microseconds()) / 1000.0
+
+	// per-digit timings and drift
+	var cpuTimes []SampleTiming
+	var gpuTimes []SampleTiming
+	var drift []DriftMetrics
+
+	for d := 0; d <= 9; d++ {
+		idx, ok := firstIdx[d]
+		if !ok {
+			continue
+		}
+		sample := images[idx]
+
+		// CPU
+		startCPU := time.Now()
+		nnCPU.Forward(sample)
+		outCPU := nnCPU.ExtractOutput()
+		elapsedCPU := float64(time.Since(startCPU).Microseconds()) / 1000.0
+
+		// GPU (or CPU fallback if GPU init failed)
+		startGPU := time.Now()
+		nnGPU.Forward(sample)
+		outGPU := nnGPU.ExtractOutput()
+		elapsedGPU := float64(time.Since(startGPU).Microseconds()) / 1000.0
+
+		cpuTimes = append(cpuTimes, SampleTiming{
+			Digit: d, Idx: idx, ElapsedMS: elapsedCPU,
+			Pred: argmax64(outCPU), Top1Score: top1(outCPU),
+		})
+		gpuTimes = append(gpuTimes, SampleTiming{
+			Digit: d, Idx: idx, ElapsedMS: elapsedGPU,
+			Pred: argmax64(outGPU), Top1Score: top1(outGPU),
+		})
+
+		mx, mae := driftMaxAndMAE(outCPU, outGPU)
+		drift = append(drift, DriftMetrics{Digit: d, Idx: idx, MaxAbs: mx, MAE: mae})
+	}
+
+	return ModelRun{
+		ModelFile:        filepath.Base(modelPath),
+		WebGPUInitOK:     gpuInitOK,
+		WebGPUInitTimeMS: initMS,
+		CPU:              cpuTimes,
+		GPU:              gpuTimes,
+		Drift:            drift,
+	}, nil
+}
+
+func firstIndexPerDigit(labels [][][]float64) map[int]int {
+	firstIdx := make(map[int]int)
+	for i, lbl := range labels {
+		for d, v := range lbl[0] {
+			if v == 1.0 {
+				if _, seen := firstIdx[d]; !seen {
+					firstIdx[d] = i
+				}
+				break
+			}
+		}
+	}
+	return firstIdx
+}
+
+func top1(out []float64) float64 {
+	if len(out) == 0 {
+		return 0
+	}
+	best := out[0]
+	for i := 1; i < len(out); i++ {
+		if out[i] > best {
+			best = out[i]
+		}
+	}
+	return best
+}
+
+// stable machine ID from normalized SystemInfo
+func hashSystemInfo(si SystemInfo) string {
+	clone := si
+	clone.GPUModel = strings.ToLower(clone.GPUModel)
+	clone.CPUModel = strings.ToLower(clone.CPUModel)
+	b, _ := json.Marshal(clone)
+	sum := md5.Sum(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// ---- HTTP helpers ----
+
+func fetchManifest(hostBase string) ([]modelManifest, error) {
+	u := strings.TrimRight(hostBase, "/") + "/models/manifest.json"
+	resp, err := http.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %s from %s", resp.Status, u)
+	}
+	var manifest []modelManifest
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		return nil, err
+	}
+	return manifest, nil
+}
+
+func httpDownload(url, dst string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: %s", url, resp.Status)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, resp.Body)
+	return err
+}
+
+func uploadFile(hostBase, path, name string) error {
+	u := strings.TrimRight(hostBase, "/") + "/upload"
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	fw, err := w.CreateFormFile("file", filepath.Base(name))
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := io.Copy(fw, f); err != nil {
+		return err
+	}
+	_ = w.WriteField("name", name)
+	_ = w.Close()
+
+	req, err := http.NewRequest(http.MethodPost, u, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload failed: %s — %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+func baseNames(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, filepath.Base(p))
+	}
+	return out
+}

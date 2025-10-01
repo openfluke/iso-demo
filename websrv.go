@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,6 +64,8 @@ func StartWeb(port int, dir string) error {
 	}))
 	app.Use(compress.New(compress.Config{Level: compress.LevelBestSpeed}))
 
+	RegisterUpload(app, ws.dir)
+
 	// Health/info
 	app.Get("/healthz", func(c *fiber.Ctx) error { return c.SendString("ok") })
 	app.Get("/whoami", func(c *fiber.Ctx) error {
@@ -98,6 +101,8 @@ func StartWeb(port int, dir string) error {
 	ws.app = app
 	ws.running = true
 	printServerBanner(port, dir)
+	printCompiledIndex(port, dir)
+
 	return nil
 }
 
@@ -174,4 +179,75 @@ func parsePort(addr string) int {
 		}
 	}
 	return 8080
+}
+
+// --- compiled assets helpers ---
+
+// collectCompiledFiles returns all regular files under <dir>/compiled as
+// paths relative to the compiled root (POSIX-style slashes).
+func collectCompiledFiles(dir string) []string {
+	compiled := filepath.Join(dir, "compiled")
+	var out []string
+	_ = filepath.WalkDir(compiled, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(compiled, p)
+		if err != nil {
+			return nil
+		}
+		// Normalize to URL slashes
+		rel = filepath.ToSlash(rel)
+		out = append(out, rel)
+		return nil
+	})
+	return out
+}
+
+// printCompiledIndex prints per-LAN-URL links for each compiled artifact,
+// plus a ready-to-paste curl line using the first LAN URL (or localhost).
+func printCompiledIndex(port int, dir string) {
+	files := collectCompiledFiles(dir)
+	if len(files) == 0 {
+		fmt.Println("ℹ️  No files found in ./public/compiled (nothing to index).")
+		return
+	}
+
+	urls := lanURLs(port)
+	if len(urls) == 0 {
+		urls = []string{fmt.Sprintf("http://127.0.0.1:%d", port)}
+	}
+
+	fmt.Println("📦 Compiled artifacts:")
+	for _, u := range urls {
+		base := fmt.Sprintf("%s/compiled", strings.TrimRight(u, "/"))
+		fmt.Printf("   • Index for %s\n", base)
+		for _, f := range files {
+			fmt.Printf("     - %s/%s\n", base, f)
+		}
+	}
+
+	// Offer copy-paste curl examples with the first reachable URL.
+	u := urls[0]
+	base := fmt.Sprintf("%s/compiled", strings.TrimRight(u, "/"))
+	fmt.Println("⬇️  curl from a remote machine (SSH session) examples:")
+	// Single file example with placeholder — show both -O and -o forms.
+	eg := files[0]
+	fmt.Printf("   # Save with remote filename\n")
+	fmt.Printf("   curl -O '%s/%s'\n", base, eg)
+	fmt.Printf("   # Save to a custom local name\n")
+	fmt.Printf("   curl -o out.bin '%s/%s'\n", base, eg)
+	fmt.Println("   # Tip: replace the tail with the exact path printed above.")
+
+	// Optional: a quick 'all files' fetch using xargs (Linux/macOS)
+	fmt.Println("   # Fetch ALL artifacts into current dir (Linux/macOS):")
+	fmt.Printf("   curl -s '%s' >/dev/null 2>&1 # ensure server reachable\n", u)
+	fmt.Printf("   cat <<'EOF' | sed 's#^#%s/#' | xargs -n1 -I{} curl -O '{}'\n", base)
+	for _, f := range files {
+		fmt.Println(f)
+	}
+	fmt.Println("EOF")
 }

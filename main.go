@@ -38,6 +38,7 @@ func main() {
 		fmt.Println("9) Evaluate a model on Train/Test set (ADHD metrics)")
 		fmt.Println("10) Run CPU numeric microbench (duration/filter/format)")
 		fmt.Println("11) Web server: start/stop/status")
+		fmt.Println("12) Telemetry: pull models from host → run → push report")
 
 		fmt.Println("0) Exit")
 		fmt.Print("Select: ")
@@ -72,6 +73,8 @@ func runChoice(choice string) {
 		runBenchMenu()
 	case "11":
 		runWebMenu()
+	case "12":
+		runTelemetryMenu()
 
 	case "0":
 		fmt.Println("Bye.")
