@@ -32,7 +32,7 @@ type TelemetryReport struct {
 	System     SystemInfo      `json:"system_info"`
 	FromHost   string          `json:"from_host"` // http://ip:port of the model host
 	ModelsUsed []string        `json:"models_used"`
-	Samples    []int           `json:"samples"` // digits 0..9, index used
+	Samples    []int           `json:"samples"` // digits 0..9 used (first index per digit)
 	StartedAt  time.Time       `json:"started_at"`
 	EndedAt    time.Time       `json:"ended_at"`
 	Notes      string          `json:"notes,omitempty"`
@@ -46,16 +46,18 @@ type ModelRun struct {
 	CPU              []SampleTiming    `json:"cpu"` // per digit
 	GPU              []SampleTiming    `json:"gpu"` // per digit (may be CPU fallback if GPU init failed)
 	Drift            []DriftMetrics    `json:"drift"`
-	Summary          map[string]any    `json:"summary,omitempty"`
-	Meta             map[string]string `json:"meta,omitempty"`
+	ADHD10           ADHDScore         `json:"adhd10"`            // buckets + per-sample labels + summary across the 10 fixed samples
+	Summary          map[string]any    `json:"summary,omitempty"` // extra roll-ups if you want later
+	Meta             map[string]string `json:"meta,omitempty"`    // extra tags
 }
 
 type SampleTiming struct {
-	Digit     int     `json:"digit"`
-	Idx       int     `json:"idx"`
-	ElapsedMS float64 `json:"elapsed_ms"`
-	Pred      int     `json:"pred"`
-	Top1Score float64 `json:"top1_score"`
+	Digit     int       `json:"digit"`
+	Idx       int       `json:"idx"`
+	ElapsedMS float64   `json:"elapsed_ms"`
+	Pred      int       `json:"pred"`
+	Top1Score float64   `json:"top1_score"`
+	Output    []float64 `json:"output"` // exact output vector for this sample (rounded)
 }
 
 type DriftMetrics struct {
@@ -63,6 +65,45 @@ type DriftMetrics struct {
 	Idx    int     `json:"idx"`
 	MaxAbs float64 `json:"max_abs"`
 	MAE    float64 `json:"mae"`
+}
+
+// --- ADHD buckets & per-sample labels ---
+
+type ADHDScore struct {
+	Top1AccuracyCPU    float64 `json:"top1_accuracy_cpu"`
+	Top1AccuracyGPU    float64 `json:"top1_accuracy_gpu"`
+	CPUvsGPUAgreeCount int     `json:"cpu_vs_gpu_agree_count"`
+	AvgDriftMAE        float64 `json:"avg_drift_mae"`
+	MaxDriftMaxAbs     float64 `json:"max_drift_max_abs"`
+
+	// Bucket roll-ups for strict 1:1 device/model comparison
+	Buckets   ADHDBuckets  `json:"buckets"`
+	PerSample []ADHDSample `json:"per_sample"`
+}
+
+type ADHDBuckets struct {
+	CPUCorrect int `json:"cpu_correct"`
+	CPUWrong   int `json:"cpu_wrong"`
+	GPUCorrect int `json:"gpu_correct"`
+	GPUWrong   int `json:"gpu_wrong"`
+
+	// Nuance buckets (MNIST often has near-misses)
+	CPUOffBy1 int `json:"cpu_off_by_1"`
+	GPUOffBy1 int `json:"gpu_off_by_1"`
+
+	// CPU/GPU prediction agreement
+	Agree    int `json:"cpu_gpu_agree"`
+	Disagree int `json:"cpu_gpu_disagree"`
+}
+
+type ADHDSample struct {
+	Digit     int    `json:"digit"`
+	Idx       int    `json:"idx"`
+	CPUPred   int    `json:"cpu_pred"`
+	GPUPred   int    `json:"gpu_pred"`
+	CPUBucket string `json:"cpu_bucket"` // "correct" | "off_by_1" | "wrong"
+	GPUBucket string `json:"gpu_bucket"` // "
+	Agreement string `json:"agreement"`  // "agree" | "disagree"
 }
 
 type modelManifest struct {
@@ -95,7 +136,6 @@ func ensureLocalMNIST(hostBase string) error {
 	if allPresent {
 		return nil
 	}
-
 	// Pull each missing file from host /mnist/<name>
 	base := strings.TrimRight(hostBase, "/") + "/mnist"
 	for _, fn := range mnistFiles {
@@ -171,12 +211,14 @@ func RunTelemetryPipeline(hostBase string, source TelemetrySource) (string, erro
 			fmt.Printf("⚠️  model %s: %v\n", filepath.Base(mf), err)
 			continue
 		}
+		// ADHD-style: buckets + per-sample labels + summary across the 10 fixed samples
+		mr.ADHD10 = computeADHD10(mr)
 		per = append(per, mr)
 	}
 	end := time.Now()
 
 	report := TelemetryReport{
-		Version:    "1.0.0",
+		Version:    "1.2.0",
 		Source:     source,
 		MachineID:  machineID,
 		System:     sys,
@@ -284,10 +326,12 @@ func runModelTelemetry(modelPath string, images [][][]float64, firstIdx map[int]
 		cpuTimes = append(cpuTimes, SampleTiming{
 			Digit: d, Idx: idx, ElapsedMS: elapsedCPU,
 			Pred: argmax64(outCPU), Top1Score: top1(outCPU),
+			Output: roundSlice(outCPU, 6),
 		})
 		gpuTimes = append(gpuTimes, SampleTiming{
 			Digit: d, Idx: idx, ElapsedMS: elapsedGPU,
 			Pred: argmax64(outGPU), Top1Score: top1(outGPU),
+			Output: roundSlice(outGPU, 6),
 		})
 
 		mx, mae := driftMaxAndMAE(outCPU, outGPU)
@@ -332,6 +376,113 @@ func top1(out []float64) float64 {
 	return best
 }
 
+// ADHD-style buckets + per-sample labels over the 10 fixed samples
+func computeADHD10(m ModelRun) ADHDScore {
+	if len(m.CPU) == 0 || len(m.GPU) == 0 || len(m.Drift) == 0 {
+		return ADHDScore{}
+	}
+
+	var accCPU, accGPU float64
+	var agreeCount int
+	var sumMAE, maxMaxAbs float64
+	n := 0
+
+	var buckets ADHDBuckets
+	per := make([]ADHDSample, 0, len(m.CPU))
+
+	for i := range m.CPU {
+		c := m.CPU[i]
+		g := m.GPU[i]
+		d := m.Drift[i]
+
+		// correctness vs ground truth label
+		cCorrect := (c.Pred == c.Digit)
+		gCorrect := (g.Pred == g.Digit)
+		if cCorrect {
+			accCPU += 1
+			buckets.CPUCorrect++
+		} else {
+			buckets.CPUWrong++
+		}
+		if gCorrect {
+			accGPU += 1
+			buckets.GPUCorrect++
+		} else {
+			buckets.GPUWrong++
+		}
+
+		// nuance: off-by-1
+		if absInt(c.Pred-c.Digit) == 1 {
+			buckets.CPUOffBy1++
+		}
+		if absInt(g.Pred-g.Digit) == 1 {
+			buckets.GPUOffBy1++
+		}
+
+		// agreement between CPU/GPU predictions
+		agree := (c.Pred == g.Pred)
+		if agree {
+			agreeCount++
+		} else {
+			buckets.Disagree++
+		}
+		buckets.Agree = agreeCount // keep in sync
+
+		// drift rollups
+		sumMAE += d.MAE
+		if d.MaxAbs > maxMaxAbs {
+			maxMaxAbs = d.MaxAbs
+		}
+
+		// per-sample bucket labels for exact 1:1 diffs
+		per = append(per, ADHDSample{
+			Digit:     c.Digit,
+			Idx:       c.Idx,
+			CPUPred:   c.Pred,
+			GPUPred:   g.Pred,
+			CPUBucket: labelBucket(c.Pred, c.Digit),
+			GPUBucket: labelBucket(g.Pred, g.Digit),
+			Agreement: ternary(agree, "agree", "disagree"),
+		})
+
+		n++
+	}
+
+	return ADHDScore{
+		Top1AccuracyCPU:    safeDiv(accCPU, float64(n)),
+		Top1AccuracyGPU:    safeDiv(accGPU, float64(n)),
+		CPUvsGPUAgreeCount: agreeCount,
+		AvgDriftMAE:        safeDiv(sumMAE, float64(n)),
+		MaxDriftMaxAbs:     maxMaxAbs,
+		Buckets:            buckets,
+		PerSample:          per,
+	}
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func labelBucket(pred, label int) string {
+	if pred == label {
+		return "correct"
+	}
+	if absInt(pred-label) == 1 {
+		return "off_by_1"
+	}
+	return "wrong"
+}
+
+func ternary[T any](cond bool, a, b T) T {
+	if cond {
+		return a
+	}
+	return b
+}
+
 // stable machine ID from normalized SystemInfo
 func hashSystemInfo(si SystemInfo) string {
 	clone := si
@@ -340,6 +491,40 @@ func hashSystemInfo(si SystemInfo) string {
 	b, _ := json.Marshal(clone)
 	sum := md5.Sum(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// ---- math/util helpers ----
+
+func safeDiv(a, b float64) float64 {
+	if b == 0 {
+		return 0
+	}
+	return a / b
+}
+
+func roundSlice(xs []float64, places int) []float64 {
+	if xs == nil {
+		return nil
+	}
+	scale := pow10(places)
+	out := make([]float64, len(xs))
+	for i, v := range xs {
+		// round half away from zero-ish
+		if v >= 0 {
+			out[i] = float64(int64(v*scale+0.5)) / scale
+		} else {
+			out[i] = float64(int64(v*scale-0.5)) / scale
+		}
+	}
+	return out
+}
+
+func pow10(n int) float64 {
+	p := 1.0
+	for i := 0; i < n; i++ {
+		p *= 10
+	}
+	return p
 }
 
 // ---- HTTP helpers ----
