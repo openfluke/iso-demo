@@ -70,6 +70,47 @@ type modelManifest struct {
 	Filename string `json:"filename"`
 }
 
+// --- MNIST ensure/download helpers ---
+
+var mnistFiles = []string{
+	"train-images-idx3-ubyte",
+	"train-labels-idx1-ubyte",
+	"t10k-images-idx3-ubyte",
+	"t10k-labels-idx1-ubyte",
+}
+
+func ensureLocalMNIST(hostBase string) error {
+	localDir := filepath.Join("public", "mnist")
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		return err
+	}
+	// If all files already exist, we're done.
+	allPresent := true
+	for _, fn := range mnistFiles {
+		if _, err := os.Stat(filepath.Join(localDir, fn)); err != nil {
+			allPresent = false
+			break
+		}
+	}
+	if allPresent {
+		return nil
+	}
+
+	// Pull each missing file from host /mnist/<name>
+	base := strings.TrimRight(hostBase, "/") + "/mnist"
+	for _, fn := range mnistFiles {
+		dst := filepath.Join(localDir, fn)
+		if _, err := os.Stat(dst); err == nil {
+			continue
+		}
+		src := base + "/" + fn
+		if err := httpDownload(src, dst); err != nil {
+			return fmt.Errorf("mnist download failed: %s -> %s: %w", src, dst, err)
+		}
+	}
+	return nil
+}
+
 // ---- public API ----
 
 // Pull models from host, run telemetry, save local JSON, and push back.
@@ -104,6 +145,11 @@ func RunTelemetryPipeline(hostBase string, source TelemetrySource) (string, erro
 	// 2) collect system info & machine id
 	sys := Collect()
 	machineID := hashSystemInfo(sys)
+
+	// 2.5) ensure MNIST exists locally (pull from host if needed)
+	if err := ensureLocalMNIST(hostBase); err != nil {
+		return "", fmt.Errorf("ensure mnist: %w", err)
+	}
 
 	// 3) prepare samples: first index per digit (0..9)
 	images, labels, err := loadMNISTData("./public/mnist")
@@ -202,7 +248,7 @@ func runModelTelemetry(modelPath string, images [][][]float64, firstIdx map[int]
 		nnGPU.WebGPUNative = false
 	} else {
 		gpuInitOK = true
-		// warmup pay cost once (pick any sample)
+		// warmup cost once (pick any sample)
 		if idx, ok := firstIdx[0]; ok {
 			nnGPU.Forward(images[idx])
 			_ = nnGPU.ExtractOutput()
