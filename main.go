@@ -37,6 +37,7 @@ func main() {
 		fmt.Println("8) Train model(s): N epochs or until target ADHD%")
 		fmt.Println("9) Evaluate a model on Train/Test set (ADHD metrics)")
 		fmt.Println("10) Run CPU numeric microbench (duration/filter/format)")
+		fmt.Println("11) Web server: start/stop/status")
 
 		fmt.Println("0) Exit")
 		fmt.Print("Select: ")
@@ -69,6 +70,8 @@ func runChoice(choice string) {
 		runEvaluateMenu()
 	case "10":
 		runBenchMenu()
+	case "11":
+		runWebMenu()
 
 	case "0":
 		fmt.Println("Bye.")
@@ -282,5 +285,57 @@ func humanize(n int) string {
 		return fmt.Sprintf("%.2fK", f/1e3)
 	default:
 		return fmt.Sprintf("%d", n)
+	}
+}
+
+func runWebMenu() {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Println("Web server control:")
+	fmt.Println(" 1) Start")
+	fmt.Println(" 2) Stop")
+	fmt.Println(" 3) Status")
+	fmt.Print("Select: ")
+	sel, _ := reader.ReadString('\n')
+	sel = strings.TrimSpace(sel)
+
+	switch sel {
+	case "1":
+		fmt.Print("Port [default 8080]: ")
+		p, _ := reader.ReadString('\n')
+		p = strings.TrimSpace(p)
+		port := 8080
+		if p != "" {
+			if v, err := strconv.Atoi(p); err == nil && v > 0 && v < 65535 {
+				port = v
+			}
+		}
+		fmt.Print("Public dir [default public]: ")
+		d, _ := reader.ReadString('\n')
+		d = strings.TrimSpace(d)
+		if d == "" {
+			d = "public"
+		}
+		if err := StartWeb(port, d); err != nil {
+			fmt.Println("❌", err)
+			return
+		}
+	case "2":
+		if err := StopWeb(); err != nil {
+			fmt.Println("❌", err)
+			return
+		}
+		fmt.Println("🛑 Web server stopped.")
+	case "3":
+		running, addr := WebStatus()
+		if !running {
+			fmt.Println("ℹ️  Web server is not running.")
+			return
+		}
+		fmt.Printf("✅ Running at http://%s\n", addr)
+		for _, u := range lanURLs(parsePort(addr)) {
+			fmt.Printf("   → %s\n", u)
+		}
+	default:
+		fmt.Println("Unknown choice.")
 	}
 }
