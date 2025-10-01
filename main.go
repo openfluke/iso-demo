@@ -33,7 +33,7 @@ func main() {
 		fmt.Println("5) Benchmark models CPU on digit samples 1 item of each number (1 to 9)")
 		fmt.Println("6) Benchmark models GPU on digit samples 1 item of each number (1 to 9)")
 		fmt.Println("7) Compare CPU vs GPU (choose model)")
-		fmt.Println("8) Train a model for 1 epoch")
+		fmt.Println("8) Train model(s): N epochs or until target ADHD%")
 		fmt.Println("9) Evaluate a model on Train/Test set (ADHD metrics)")
 
 		fmt.Println("0) Exit")

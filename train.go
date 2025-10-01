@@ -12,9 +12,13 @@ import (
 	"github.com/openfluke/paragon/v3"
 )
 
+// ─────────────────────────── MENU ───────────────────────────
+
 func runTrainMenu() {
+	reader := bufio.NewReader(os.Stdin)
 	modelDir := filepath.Join("public", "models")
 
+	// Build model list
 	entries, _ := os.ReadDir(modelDir)
 	models := []string{}
 	for _, e := range entries {
@@ -28,54 +32,141 @@ func runTrainMenu() {
 		return
 	}
 
-	fmt.Println("\nAvailable models:")
-	for i, m := range models {
-		fmt.Printf("%d) %s\n", i+1, m)
-	}
+	// Mode: single or all
+	fmt.Println("\nTrain what?")
+	fmt.Println("1) Single model")
+	fmt.Println("2) All models")
 	fmt.Println("0) Back")
-
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Select model: ")
-	choiceRaw, _ := reader.ReadString('\n')
-	choice := strings.TrimSpace(choiceRaw)
-	if choice == "0" {
+	fmt.Print("Select: ")
+	modeRaw, _ := reader.ReadString('\n')
+	mode := strings.TrimSpace(modeRaw)
+	if mode == "0" {
 		return
 	}
-	idx, err := strconv.Atoi(choice)
-	if err != nil || idx < 1 || idx > len(models) {
+	if mode != "1" && mode != "2" {
 		fmt.Println("❌ Invalid choice")
 		return
 	}
 
-	modelPath := filepath.Join(modelDir, models[idx-1])
-	fmt.Printf("\n▶ Training %s for 1 epoch\n", models[idx-1])
-	trainOneEpoch(modelPath)
-}
+	var chosen []string
+	if mode == "1" {
+		// choose a single model
+		fmt.Println("\nAvailable models:")
+		for i, m := range models {
+			fmt.Printf("%d) %s\n", i+1, m)
+		}
+		fmt.Println("0) Back")
+		fmt.Print("Select model: ")
+		choiceRaw, _ := reader.ReadString('\n')
+		choice := strings.TrimSpace(choiceRaw)
+		if choice == "0" {
+			return
+		}
+		idx, err := strconv.Atoi(choice)
+		if err != nil || idx < 1 || idx > len(models) {
+			fmt.Println("❌ Invalid choice")
+			return
+		}
+		chosen = []string{models[idx-1]}
+	} else {
+		// all models
+		chosen = models
+	}
 
-func trainOneEpoch(modelPath string) {
-	// 1) Load MNIST
-	images, labels, err := loadMNISTData("./public/mnist")
-	if err != nil {
-		fmt.Println("❌ Failed to load MNIST:", err)
+	// Strategy: epochs vs target score
+	fmt.Println("\nTraining strategy:")
+	fmt.Println("1) Train N epochs")
+	fmt.Println("2) Train until ADHD score ≥ target% (with max epochs)")
+	fmt.Println("0) Back")
+	fmt.Print("Select: ")
+	stratRaw, _ := reader.ReadString('\n')
+	strat := strings.TrimSpace(stratRaw)
+	if strat == "0" {
 		return
 	}
-	trainInputs, trainTargets, testInputs, testTargets := paragon.SplitDataset(images, labels, 0.8)
+	if strat != "1" && strat != "2" {
+		fmt.Println("❌ Invalid choice")
+		return
+	}
 
-	fmt.Printf("\n📦 Model: %s\n", modelPath)
+	// Hyperparams
+	lr := 0.01
+	fmt.Printf("Learning rate [default %.4f]: ", lr)
+	if s, _ := reader.ReadString('\n'); strings.TrimSpace(s) != "" {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && v > 0 {
+			lr = v
+		}
+	}
 
-	// 2) Load the saved model (type-aware) to discover topology/weights
+	var epochs int
+	var target float64
+	var maxEpochs int
+
+	if strat == "1" {
+		fmt.Print("Epochs (e.g., 1, 3, 10): ")
+		eRaw, _ := reader.ReadString('\n')
+		e := strings.TrimSpace(eRaw)
+		ep, err := strconv.Atoi(e)
+		if err != nil || ep < 1 {
+			fmt.Println("❌ Invalid epochs")
+			return
+		}
+		epochs = ep
+	} else {
+		fmt.Print("Target ADHD score percent (e.g., 70.0): ")
+		tRaw, _ := reader.ReadString('\n')
+		t := strings.TrimSpace(tRaw)
+		tv, err := strconv.ParseFloat(t, 64)
+		if err != nil || tv <= 0 || tv > 100 {
+			fmt.Println("❌ Invalid target percent")
+			return
+		}
+		target = tv
+
+		fmt.Print("Max epochs (safety cap, e.g., 10): ")
+		meRaw, _ := reader.ReadString('\n')
+		me := strings.TrimSpace(meRaw)
+		mep, err := strconv.Atoi(me)
+		if err != nil || mep < 1 {
+			fmt.Println("❌ Invalid max epochs")
+			return
+		}
+		maxEpochs = mep
+	}
+
+	// Run training
+	startAll := time.Now()
+	for i, name := range chosen {
+		modelPath := filepath.Join(modelDir, name)
+		fmt.Printf("\n▶ [%d/%d] Training %s\n", i+1, len(chosen), name)
+
+		var err error
+		if strat == "1" {
+			err = trainModelEpochs(modelPath, epochs, lr)
+		} else {
+			err = trainModelUntilScore(modelPath, target, maxEpochs, lr)
+		}
+		if err != nil {
+			fmt.Printf("   ❌ %s: %v\n", name, err)
+		}
+	}
+	fmt.Printf("\n✅ Training batch complete in %v\n", time.Since(startAll))
+}
+
+// ─────────────────────────── CORE ───────────────────────────
+
+// load+rebuild a model as float32 with correct shapes/acts, then load weights
+func loadFloat32Model(modelPath string) (*paragon.Network[float32], error) {
 	loaded, err := paragon.LoadNamedNetworkFromJSONFile(modelPath)
 	if err != nil {
-		fmt.Printf("❌ Load failed: %v\n", err)
-		return
+		return nil, fmt.Errorf("load failed: %w", err)
 	}
 	tmp, ok := loaded.(*paragon.Network[float32])
 	if !ok {
-		fmt.Printf("⚠️ Skipping (not float32): %T\n", loaded)
-		return
+		return nil, fmt.Errorf("not float32: %T", loaded)
 	}
 
-	// 3) Rebuild a fresh network with identical shapes/acts (so runtime/GPU metadata is correct)
+	// derive shapes/acts/trainable
 	shapes := make([]struct{ Width, Height int }, len(tmp.Layers))
 	acts := make([]string, len(tmp.Layers))
 	trains := make([]bool, len(tmp.Layers))
@@ -87,63 +178,137 @@ func trainOneEpoch(modelPath string) {
 		}
 		acts[i], trains[i] = a, true
 	}
-
 	nn, err := paragon.NewNetwork[float32](shapes, acts, trains)
 	if err != nil {
-		fmt.Printf("❌ NewNetwork failed: %v\n", err)
-		return
+		return nil, fmt.Errorf("NewNetwork failed: %w", err)
 	}
 	state, _ := tmp.MarshalJSONModel()
 	if err := nn.UnmarshalJSONModel(state); err != nil {
-		fmt.Printf("❌ UnmarshalJSONModel failed: %v\n", err)
-		return
+		return nil, fmt.Errorf("UnmarshalJSONModel failed: %w", err)
 	}
+	return nn, nil
+}
 
-	// 4) Initialize WebGPU once (same pattern as compare); warmup forward to pay JIT cost
+// silent ADHD score (no prints). Mirrors evaluateFullNetwork but quiet.
+func evalADHDScore[T paragon.Numeric](nn *paragon.Network[T], inputs, targets [][][]float64) float64 {
+	expected := make([]float64, len(inputs))
+	actual := make([]float64, len(inputs))
+	for i := range inputs {
+		nn.Forward(inputs[i])
+		out := nn.ExtractOutput()
+		expected[i] = float64(paragon.ArgMax(targets[i][0]))
+		actual[i] = float64(paragon.ArgMax(out))
+	}
+	nn.EvaluateModel(expected, actual)
+	return nn.Performance.Score
+}
+
+func withGPU[T paragon.Numeric](nn *paragon.Network[T], warm [][][]float64) (cleanup func(), used bool) {
 	nn.WebGPUNative = true
 	nn.Debug = false
-	startGPU := time.Now()
-	if err := nn.InitializeOptimizedGPU(); err != nil {
-		fmt.Printf("⚠️ WebGPU init failed: %v\n   Falling back to CPU for training/inference.\n", err)
-		nn.WebGPUNative = false
-	} else {
-		fmt.Println("✅ WebGPU initialized successfully")
-		// Warmup once so later forwards during/after training are consistent
-		if len(trainInputs) > 0 {
-			nn.Forward(trainInputs[0])
-			_ = nn.ExtractOutput()
-		}
-		defer nn.CleanupOptimizedGPU()
-	}
-	fmt.Printf("⏱ WebGPU Init Time: %v\n", time.Since(startGPU))
-
-	// 5) Train for 1 epoch (CPU or GPU depending on your engine’s Train path)
-	//    (If Train is CPU-only in your build, this still keeps GPU state valid for comparisons after.)
-	lr := float64(0.01)
-	fmt.Println("🧠 Training for 1 epoch...")
 	start := time.Now()
-	nn.Train(trainInputs, trainTargets, 1, lr, false, float32(2), float32(-2))
-	fmt.Printf("⏱ Training completed in %v\n", time.Since(start))
-
-	// 6) Quick sanity accuracy on 100 test samples
-	N := 100
-	if len(testInputs) < N {
-		N = len(testInputs)
+	if err := nn.InitializeOptimizedGPU(); err != nil {
+		fmt.Printf("⚠️  WebGPU init failed: %v\n   Falling back to CPU.\n", err)
+		nn.WebGPUNative = false
+		return func() {}, false
 	}
-	correct := 0
-	for i := 0; i < N; i++ {
-		nn.Forward(testInputs[i])
-		out := nn.ExtractOutput()
-		if argmax64(out) == argmax64(testTargets[i][0]) {
-			correct++
+	fmt.Printf("✅ WebGPU initialized in %v\n", time.Since(start))
+	if len(warm) > 0 {
+		nn.Forward(warm[0])
+		_ = nn.ExtractOutput()
+	}
+	return func() { nn.CleanupOptimizedGPU() }, true
+}
+
+// Train a single model for fixed N epochs; saves back to disk.
+func trainModelEpochs(modelPath string, epochs int, lr float64) error {
+	// Load data
+	images, labels, err := loadMNISTData("./public/mnist")
+	if err != nil {
+		return fmt.Errorf("load MNIST: %w", err)
+	}
+	trainInputs, trainTargets, testInputs, testTargets := paragon.SplitDataset(images, labels, 0.8)
+
+	nn, err := loadFloat32Model(modelPath)
+	if err != nil {
+		return err
+	}
+
+	// GPU path (optional; Train uses whatever your engine uses internally)
+	cleanup, _ := withGPU(nn, trainInputs)
+	defer cleanup()
+
+	fmt.Printf("🧠 Training %s for %d epoch(s) @ lr=%.4f …\n", filepath.Base(modelPath), epochs, lr)
+	start := time.Now()
+	nn.Train(trainInputs, trainTargets, epochs, lr, false, float32(2), float32(-2))
+	fmt.Printf("⏱ Training time: %v\n", time.Since(start))
+
+	// quick post-train scores
+	trainScore := evalADHDScore(nn, trainInputs, trainTargets)
+	testScore := evalADHDScore(nn, testInputs, testTargets)
+	fmt.Printf("🎯 ADHD scores → Train: %.4f%% | Test: %.4f%%\n", trainScore, testScore)
+
+	if err := nn.SaveJSON(modelPath); err != nil {
+		return fmt.Errorf("save model: %w", err)
+	}
+	fmt.Printf("💾 Saved → %s\n", modelPath)
+	return nil
+}
+
+// Train until score ≥ target or maxEpochs reached; saves back to disk.
+func trainModelUntilScore(modelPath string, targetPct float64, maxEpochs int, lr float64) error {
+	images, labels, err := loadMNISTData("./public/mnist")
+	if err != nil {
+		return fmt.Errorf("load MNIST: %w", err)
+	}
+	trainInputs, trainTargets, testInputs, testTargets := paragon.SplitDataset(images, labels, 0.8)
+
+	nn, err := loadFloat32Model(modelPath)
+	if err != nil {
+		return err
+	}
+
+	cleanup, _ := withGPU(nn, trainInputs)
+	defer cleanup()
+
+	fmt.Printf("🧠 Training %s until ADHD ≥ %.2f%% (max %d epochs) @ lr=%.4f …\n",
+		filepath.Base(modelPath), targetPct, maxEpochs, lr)
+
+	startAll := time.Now()
+	best := -1.0
+	var hitEpoch int = -1
+
+	for ep := 1; ep <= maxEpochs; ep++ {
+		epStart := time.Now()
+		nn.Train(trainInputs, trainTargets, 1, lr, false, float32(2), float32(-2))
+		epDur := time.Since(epStart)
+
+		// Evaluate (quiet)
+		trainScore := evalADHDScore(nn, trainInputs, trainTargets)
+		testScore := evalADHDScore(nn, testInputs, testTargets)
+		if testScore > best {
+			best = testScore
+		}
+
+		fmt.Printf("   Epoch %2d: Train=%.4f%%  Test=%.4f%% (best=%.4f%%)  ⏱ %v\n",
+			ep, trainScore, testScore, best, epDur)
+
+		if testScore >= targetPct {
+			hitEpoch = ep
+			break
 		}
 	}
-	fmt.Printf("🎯 Quick test accuracy (%d samples): %.2f%%\n", N, 100*float64(correct)/float64(N))
 
-	// 7) Save updated weights back to disk
-	if err := nn.SaveJSON(modelPath); err != nil {
-		fmt.Printf("❌ Failed to save trained model: %v\n", err)
+	fmt.Printf("⏱ Total training time: %v\n", time.Since(startAll))
+	if hitEpoch > 0 {
+		fmt.Printf("✅ Target reached at epoch %d (best Test=%.4f%%)\n", hitEpoch, best)
 	} else {
-		fmt.Printf("💾 Updated model saved to %s\n", modelPath)
+		fmt.Printf("⚠️  Target not reached (best Test=%.4f%% after %d epochs)\n", best, maxEpochs)
 	}
+
+	if err := nn.SaveJSON(modelPath); err != nil {
+		return fmt.Errorf("save model: %w", err)
+	}
+	fmt.Printf("💾 Saved → %s\n", modelPath)
+	return nil
 }
