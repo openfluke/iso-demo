@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,7 @@ func main() {
 		fmt.Println("7) Compare CPU vs GPU (choose model)")
 		fmt.Println("8) Train model(s): N epochs or until target ADHD%")
 		fmt.Println("9) Evaluate a model on Train/Test set (ADHD metrics)")
+		fmt.Println("10) Run CPU numeric microbench (duration/filter/format)")
 
 		fmt.Println("0) Exit")
 		fmt.Print("Select: ")
@@ -65,6 +67,8 @@ func runChoice(choice string) {
 		runTrainMenu()
 	case "9":
 		runEvaluateMenu()
+	case "10":
+		runBenchMenu()
 
 	case "0":
 		fmt.Println("Bye.")
@@ -160,4 +164,123 @@ func runCompareMenu() {
 	modelPath := filepath.Join(modelDir, models[idx-1])
 	fmt.Printf("\n▶ Running CPU vs GPU comparison for %s\n", models[idx-1])
 	compareSingleModel(modelPath)
+}
+
+// --- Bench menu (wired to sysbench.go) ---
+func runBenchMenu() {
+	reader := bufio.NewReader(os.Stdin)
+
+	// Duration
+	fmt.Print("Benchmark duration [e.g., 2s, 1500ms, 3s] (default 2s): ")
+	durRaw, _ := reader.ReadString('\n')
+	durStr := strings.TrimSpace(durRaw)
+	if durStr == "" {
+		durStr = "2s"
+	}
+	dur, err := time.ParseDuration(durStr)
+	if err != nil || dur <= 0 {
+		fmt.Println("❌ Invalid duration")
+		return
+	}
+
+	// Filter
+	fmt.Println("Filter options:")
+	fmt.Println(" - all     (all numeric types)")
+	fmt.Println(" - ints    (int/uint types)")
+	fmt.Println(" - floats  (float32,float64)")
+	fmt.Println(" - custom  (comma list, e.g., int,int32,float32)")
+	fmt.Print("Choose filter [all/ints/floats/custom] (default all): ")
+	fRaw, _ := reader.ReadString('\n')
+	fSel := strings.TrimSpace(strings.ToLower(fRaw))
+	var filter string
+	switch fSel {
+	case "", "all":
+		filter = "all"
+	case "ints":
+		filter = "ints"
+	case "floats":
+		filter = "floats"
+	case "custom":
+		fmt.Print("Enter comma-separated type list: ")
+		cRaw, _ := reader.ReadString('\n')
+		filter = strings.TrimSpace(cRaw)
+	default:
+		fmt.Println("❌ Invalid filter choice")
+		return
+	}
+
+	// Output format
+	fmt.Print("Output format [table/json] (default table): ")
+	fmtFmtRaw, _ := reader.ReadString('\n')
+	fmtFmt := strings.TrimSpace(strings.ToLower(fmtFmtRaw))
+	if fmtFmt == "" {
+		fmtFmt = "table"
+	}
+	if fmtFmt != "table" && fmtFmt != "json" {
+		fmt.Println("❌ Invalid format")
+		return
+	}
+
+	// Optional outfile
+	fmt.Print("Write JSON to file as well? (leave blank to skip): ")
+	outRaw, _ := reader.ReadString('\n')
+	outFile := strings.TrimSpace(outRaw)
+
+	// Run
+	info, err := CollectBenchmarks(dur, filter)
+	if err != nil {
+		fmt.Println("❌ Benchmark error:", err)
+		return
+	}
+
+	if fmtFmt == "json" {
+		out := info.ToJSON()
+		fmt.Println(out)
+		if outFile != "" {
+			if err := os.WriteFile(outFile, []byte(out), 0o644); err != nil {
+				fmt.Printf("❌ Failed to write %s: %v\n", outFile, err)
+				return
+			}
+			fmt.Printf("💾 JSON written → %s\n", outFile)
+		}
+		return
+	}
+
+	// Pretty table
+	fmt.Printf("Numeric Microbench (dur=%.3gs, cpu=%d, filter=%s)\n",
+		info.DurationSec, info.NumCPU, info.Filter)
+	fmt.Println("-------------------------------------------------------------")
+	fmt.Printf("%-10s | %-17s | %-17s\n", "Type", "Single-Threaded", "Multi-Threaded")
+	fmt.Println("-------------------------------------------------------------")
+	for _, r := range info.Results {
+		fmt.Printf("%-10s | %-17s | %-17s\n",
+			r.Type, humanize(r.Single), humanize(r.Multi))
+	}
+	fmt.Println("-------------------------------------------------------------")
+
+	// Optional write JSON even in table mode
+	if outFile != "" {
+		bz, _ := json.MarshalIndent(info, "", "  ")
+		if err := os.WriteFile(outFile, bz, 0o644); err != nil {
+			fmt.Printf("❌ Failed to write %s: %v\n", outFile, err)
+			return
+		}
+		fmt.Printf("💾 JSON written → %s\n", outFile)
+	}
+}
+
+func humanize(n int) string {
+	f := float64(n)
+	switch {
+	case f >= 1e12:
+		return fmt.Sprintf("%.2fT", f/1e12)
+	case f >= 1e9:
+		return fmt.Sprintf("%.2fB", f/1e9)
+	case f >= 1e6:
+		return fmt.Sprintf("%.2fM", f/1e6)
+	case f >= 1e3:
+		return fmt.Sprintf("%.2fK", f/1e3)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }

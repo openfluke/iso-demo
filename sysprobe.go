@@ -1,4 +1,3 @@
-// sysprobe.go
 package main
 
 import (
@@ -14,16 +13,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/openfluke/paragon/v3"
 )
 
 type SystemInfo struct {
-	Architecture string `json:"architecture"` // x86_64, arm64 (normalized)
-	OS           string `json:"os"`           // linux, darwin, windows
-	OSVersion    string `json:"os_version"`   // e.g., "Ubuntu 22.04", "macOS 14.6", "Windows 11 10.0.22631"
-	CPUModel     string `json:"cpu_model"`
-	GPUModel     string `json:"gpu_model"`
-	DeviceModel  string `json:"device_model"` // laptop/desktop model where available
-	RAMBytes     uint64 `json:"ram_bytes"`
+	Architecture string              `json:"architecture"` // x86_64, arm64 (normalized)
+	OS           string              `json:"os"`           // linux, darwin, windows
+	OSVersion    string              `json:"os_version"`   // e.g., "Ubuntu 22.04", "macOS 14.6", "Windows 11 10.0.22631"
+	CPUModel     string              `json:"cpu_model"`
+	GPUModel     string              `json:"gpu_model"`
+	DeviceModel  string              `json:"device_model"` // laptop/desktop model where available
+	RAMBytes     uint64              `json:"ram_bytes"`
+	GPUs         []map[string]string `json:"gpus,omitempty"` // detailed WebGPU adapter info (if available)
 }
 
 func (s SystemInfo) ToJSON() string {
@@ -37,6 +39,12 @@ func Collect() SystemInfo {
 		Architecture: normalizeArch(runtime.GOARCH),
 		OS:           runtime.GOOS,
 	}
+
+	// Best-effort WebGPU adapter enumeration (non-fatal if it fails)
+	if gpuList, err := paragon.GetAllGPUInfo(); err == nil && len(gpuList) > 0 {
+		info.GPUs = gpuList
+	}
+
 	switch runtime.GOOS {
 	case "linux":
 		info.OSVersion = probeLinuxVersion()
@@ -135,7 +143,8 @@ func firstLineClean(s string) string {
 	sc := bufio.NewScanner(strings.NewReader(s))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if line != "" && !strings.Contains(strings.ToLower(line), "name") && !strings.Contains(strings.ToLower(line), "manufacturer") {
+		l := strings.ToLower(line)
+		if line != "" && !strings.Contains(l, "name") && !strings.Contains(l, "manufacturer") {
 			return line
 		}
 	}
