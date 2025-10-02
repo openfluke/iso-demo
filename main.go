@@ -101,16 +101,19 @@ func doRunExperiment() {
 
 func doExportPNGs() {
 	mnistDir := MustPublicPath("mnist")
+	fmt.Printf("📂 MNIST directory: %s\n", mnistDir)
+
 	startData := time.Now()
 	images, labels, err := loadMNISTData(mnistDir)
 	if err != nil {
-		fmt.Println("❌ Failed to load MNIST from", mnistDir, "— run option 2 first to download.")
+		fmt.Println("❌ Failed to load MNIST from", mnistDir, "--- run option 2 first to download.")
 		fmt.Println("Error:", err)
 		return
 	}
 	loadT := time.Since(startData)
 
-	fmt.Printf("📊 Loaded %d samples (approx Train=%d, Test=%d)\n", len(images), len(images)*8/10, len(images)*2/10)
+	fmt.Printf("📊 Loaded %d samples (approx Train=%d, Test=%d)\n",
+		len(images), len(images)*8/10, len(images)*2/10)
 	fmt.Printf("⏱ Data Prep Time: %v\n", loadT)
 
 	startExport := time.Now()
@@ -118,7 +121,8 @@ func doExportPNGs() {
 		fmt.Println("❌ PNG export failed:", err)
 		return
 	}
-	fmt.Printf("✅ Exported %d images to public/mnist_png/all in %v\n", len(images), time.Since(startExport))
+	fmt.Printf("✅ Exported %d images to %s in %v\n",
+		len(images), filepath.Join("public", "mnist_png", "all"), time.Since(startExport))
 }
 
 // --- Existing experiment launcher (kept from your code) ---

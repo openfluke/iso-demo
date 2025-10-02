@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,7 +22,7 @@ var (
 
 func BaseDir() (string, error) {
 	baseOnce.Do(func() {
-		// 1) ENV override
+		// 1) ENV override (highest priority for advanced users)
 		if v := strings.TrimSpace(os.Getenv("PARAGON_DATA_DIR")); v != "" {
 			if isDir(v) {
 				baseDir = v
@@ -30,6 +31,7 @@ func BaseDir() (string, error) {
 			baseErr = errors.New("PARAGON_DATA_DIR set but not a directory: " + v)
 			return
 		}
+
 		// 2) Flag override (if flags parsed)
 		if flag.Parsed() && *flagBaseDir != "" {
 			if isDir(*flagBaseDir) {
@@ -39,31 +41,24 @@ func BaseDir() (string, error) {
 			baseErr = errors.New("--base provided but not a directory: " + *flagBaseDir)
 			return
 		}
-		// 3) Adjacent to executable
+
+		// 3) ALWAYS use public folder next to executable (PRIMARY DEFAULT)
 		if exe, err := os.Executable(); err == nil {
 			exeDir := filepath.Dir(exe)
-			if d := filepath.Join(exeDir, "public"); isDir(d) {
-				baseDir = d
+			publicDir := filepath.Join(exeDir, "public")
+
+			// Create it if it doesn't exist
+			if err := os.MkdirAll(publicDir, 0755); err != nil {
+				baseErr = fmt.Errorf("failed to create public dir next to exe: %w", err)
 				return
 			}
-		}
-		// 4) Walk upward from CWD looking for "public"
-		if cwd, err := os.Getwd(); err == nil {
-			if d, ok := findUp(cwd, "public"); ok {
-				baseDir = d
-				return
-			}
-		}
-		// 5) Fallback ./public
-		if isDir("public") {
-			if abs, err := filepath.Abs("public"); err == nil {
-				baseDir = abs
-				return
-			}
-			baseDir = "public"
+
+			baseDir = publicDir
 			return
 		}
-		baseErr = errors.New(`could not locate a "public" directory; set PARAGON_DATA_DIR or use --base`)
+
+		// 4) Fallback if we can't determine executable location (shouldn't happen normally)
+		baseErr = errors.New("could not determine executable location")
 	})
 	return baseDir, baseErr
 }

@@ -156,9 +156,11 @@ func ensureLocalMNIST(hostBase string) error {
 // Pull models from host, run telemetry, save local JSON, and push back.
 func RunTelemetryPipeline(hostBase string, source TelemetrySource) (string, error) {
 	// 1) fetch manifest and download models
-	modelDirLocal := filepath.Join("public", "models_remote")
+	modelDirLocal := MustPublicPath("models_remote")
+	fmt.Printf("📂 Remote models directory: %s\n", modelDirLocal)
+
 	if err := os.MkdirAll(modelDirLocal, 0755); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create models_remote dir: %w", err)
 	}
 
 	manifest, err := fetchManifest(hostBase)
@@ -169,6 +171,8 @@ func RunTelemetryPipeline(hostBase string, source TelemetrySource) (string, erro
 		return "", fmt.Errorf("manifest empty at %s", hostBase)
 	}
 
+	fmt.Printf("📥 Downloading %d models from %s\n", len(manifest), hostBase)
+
 	var modelFiles []string
 	for _, m := range manifest {
 		if m.Filename == "" {
@@ -176,26 +180,37 @@ func RunTelemetryPipeline(hostBase string, source TelemetrySource) (string, erro
 		}
 		url := strings.TrimRight(hostBase, "/") + "/models/" + m.Filename
 		dst := filepath.Join(modelDirLocal, m.Filename)
+
+		fmt.Printf("   Downloading %s...\n", m.Filename)
 		if err := httpDownload(url, dst); err != nil {
 			return "", fmt.Errorf("download %s: %w", m.Filename, err)
 		}
 		modelFiles = append(modelFiles, dst)
 	}
+	fmt.Printf("✅ Downloaded %d model files\n", len(modelFiles))
 
 	// 2) collect system info & machine id
 	sys := Collect()
 	machineID := hashSystemInfo(sys)
+	fmt.Printf("🖥️  Machine ID: %s\n", machineID)
 
 	// 2.5) ensure MNIST exists locally (pull from host if needed)
+	mnistDir := MustPublicPath("mnist")
+	fmt.Printf("📂 MNIST directory: %s\n", mnistDir)
+
 	if err := ensureLocalMNIST(hostBase); err != nil {
 		return "", fmt.Errorf("ensure mnist: %w", err)
 	}
+	fmt.Printf("✅ MNIST data ready\n")
 
 	// 3) prepare samples: first index per digit (0..9)
-	images, labels, err := loadMNISTData(MustPublicPath("mnist"))
+	fmt.Printf("📊 Loading MNIST dataset...\n")
+	images, labels, err := loadMNISTData(mnistDir)
 	if err != nil {
 		return "", fmt.Errorf("load mnist: %w", err)
 	}
+	fmt.Printf("   Loaded %d samples\n", len(images))
+
 	firstIdx := firstIndexPerDigit(labels)
 	var digits []int
 	for d := 0; d <= 9; d++ {
@@ -204,8 +219,12 @@ func RunTelemetryPipeline(hostBase string, source TelemetrySource) (string, erro
 
 	// 4) run for each model
 	start := time.Now()
+	fmt.Printf("🧪 Running telemetry on %d models...\n", len(modelFiles))
+
 	var per []ModelRun
-	for _, mf := range modelFiles {
+	for i, mf := range modelFiles {
+		fmt.Printf("\n[%d/%d] Processing %s\n", i+1, len(modelFiles), filepath.Base(mf))
+
 		mr, err := runModelTelemetry(mf, images, firstIdx)
 		if err != nil {
 			fmt.Printf("⚠️  model %s: %v\n", filepath.Base(mf), err)
@@ -214,8 +233,12 @@ func RunTelemetryPipeline(hostBase string, source TelemetrySource) (string, erro
 		// ADHD-style: buckets + per-sample labels + summary across the 10 fixed samples
 		mr.ADHD10 = computeADHD10(mr)
 		per = append(per, mr)
+
+		fmt.Printf("   CPU Accuracy: %.2f%% | GPU Accuracy: %.2f%%\n",
+			mr.ADHD10.Top1AccuracyCPU, mr.ADHD10.Top1AccuracyGPU)
 	}
 	end := time.Now()
+	fmt.Printf("\n✅ Telemetry complete in %v\n", end.Sub(start))
 
 	report := TelemetryReport{
 		Version:    "1.2.0",
@@ -231,20 +254,28 @@ func RunTelemetryPipeline(hostBase string, source TelemetrySource) (string, erro
 	}
 
 	// 5) save locally
-	outDir := filepath.Join("public", "reports_local")
+	outDir := MustPublicPath("reports_local")
+	fmt.Printf("\n📂 Reports directory: %s\n", outDir)
+
 	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return "", err
-	}
-	fn := fmt.Sprintf("telemetry_%s_%d.json", machineID, time.Now().Unix())
-	localPath := filepath.Join(outDir, fn)
-	if err := writeJSON(localPath, report); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create reports_local: %w", err)
 	}
 
+	fn := fmt.Sprintf("telemetry_%s_%d.json", machineID, time.Now().Unix())
+	localPath := filepath.Join(outDir, fn)
+	fmt.Printf("💾 Saving report to: %s\n", localPath)
+
+	if err := writeJSON(localPath, report); err != nil {
+		return "", fmt.Errorf("failed to write report: %w", err)
+	}
+	fmt.Printf("✅ Report saved locally\n")
+
 	// 6) push back to host (multipart POST /upload)
+	fmt.Printf("📤 Uploading report to %s...\n", hostBase)
 	if err := uploadFile(hostBase, localPath, fn); err != nil {
 		return "", fmt.Errorf("push report: %w", err)
 	}
+	fmt.Printf("✅ Report uploaded successfully\n")
 
 	return localPath, nil
 }

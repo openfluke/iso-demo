@@ -100,11 +100,57 @@ iso-demo/
 
 - **Go 1.22+** (for building and running the demo).
 - **Vulkan drivers** (for WebGPU backend):
-  - On Linux: `apt install vulkan-tools mesa-vulkan-drivers` (Debian/Ubuntu)  
-    or `dnf install vulkan vulkan-tools` (Fedora).
-  - On Windows: ensure NVIDIA/AMD/Intel drivers are up to date.
-  - On macOS: WebGPU will fall back to Metal.
+
+  - **Linux:**
+
+    - Debian/Ubuntu:
+
+      ```bash
+      sudo apt install vulkan-tools mesa-vulkan-drivers
+      ```
+
+    - Fedora:
+
+      ```bash
+      sudo dnf install vulkan vulkan-tools
+      ```
+
+  - **Windows:**
+
+    - Ensure your GPU drivers (NVIDIA/AMD/Intel) are up to date.
+    - If you want extra validation tools, install the [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows).
+
+  - **macOS:** WebGPU automatically falls back to Metal (no Vulkan needed).
+
 - **Git** (to clone the repo).
+
+---
+
+## Running inside windows
+
+# Force WebGPU to use Vulkan backend in powershell
+
+```
+$env:WGPU_BACKEND = "vulkan"
+```
+
+# Enable logging for debugging
+
+```
+$env:RUST_LOG = "wgpu_core=trace,wgpu_hal=trace"
+```
+
+# Optional: avoid AMD switchable graphics layer issues
+
+```
+$env:DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1 = "1"
+```
+
+# Run iso-demo_windows_amd64.exe
+
+```
+.\iso-demo_windows_amd64.exe
+```
 
 Optional:
 

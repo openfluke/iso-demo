@@ -26,6 +26,9 @@ func createModelZoo() {
 
 	// 1) Ensure output dir
 	modelDir := MustPublicPath("models")
+
+	fmt.Printf("📂 Model directory: %s\n", modelDir)
+
 	if err := os.MkdirAll(modelDir, 0755); err != nil {
 		fmt.Printf("❌ Failed to create model dir: %v\n", err)
 		return

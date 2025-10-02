@@ -154,11 +154,17 @@ func lanURLs(port int) []string {
 }
 
 func printServerBanner(port int, dir string) {
+	absDir, _ := filepath.Abs(dir)
+	compiledDir := filepath.Join(absDir, "compiled")
+
 	fmt.Println("🌐 Web server started")
 	for _, u := range lanURLs(port) {
-		fmt.Printf("   → %s\n", u)
+		fmt.Printf(" → %s\n", u)
 	}
-	fmt.Printf("   Serving: %s (and %s if present)\n", filepath.Clean(dir), filepath.Join(dir, "compiled"))
+	fmt.Printf(" Serving: %s\n", absDir)
+	if _, err := os.Stat(compiledDir); err == nil {
+		fmt.Printf(" Compiled assets: %s\n", compiledDir)
+	}
 }
 
 // parsePort is handy if you want to re-list LAN URLs from the menu.

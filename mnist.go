@@ -103,14 +103,20 @@ func labelToOneHot(label int) [][]float64 {
 
 // Export all MNIST images as PNGs into public/mnist_png/[train|t10k]
 func exportMNISTAsPNGs(images [][][]float64, labels [][][]float64, setName string) error {
-	// make sure base dir exists
-	baseDir := filepath.Join("public", "mnist_png", setName)
+	// Use MustPublicPath for cross-platform compatibility
+	baseDir := MustPublicPath("mnist_png", setName)
+	fmt.Printf("📂 Creating export directory: %s\n", baseDir)
+
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
-		return err
+		return fmt.Errorf("failed to create base directory %s: %w", baseDir, err)
 	}
 
 	for i, img := range images {
-		// make grayscale image
+		// Progress indicator every 1000 images
+		if i > 0 && i%1000 == 0 {
+			fmt.Printf("   Processed %d/%d images...\n", i, len(images))
+		}
+
 		rows := len(img)
 		cols := len(img[0])
 		gray := image.NewGray(image.Rect(0, 0, cols, rows))
@@ -132,11 +138,12 @@ func exportMNISTAsPNGs(images [][][]float64, labels [][][]float64, setName strin
 				}
 			}
 		}
+
 		var outPath string
 		if labelIndex >= 0 {
 			labelDir := filepath.Join(baseDir, fmt.Sprintf("%d", labelIndex))
 			if err := os.MkdirAll(labelDir, 0755); err != nil {
-				return err
+				return fmt.Errorf("failed to create label directory %s: %w", labelDir, err)
 			}
 			outPath = filepath.Join(labelDir, fmt.Sprintf("img_%05d.png", i))
 		} else {
@@ -146,14 +153,16 @@ func exportMNISTAsPNGs(images [][][]float64, labels [][][]float64, setName strin
 		// save png
 		f, err := os.Create(outPath)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to create %s: %w", outPath, err)
 		}
 		if err := png.Encode(f, gray); err != nil {
 			f.Close()
-			return err
+			return fmt.Errorf("failed to encode PNG %s: %w", outPath, err)
 		}
 		f.Close()
 	}
+
+	fmt.Printf("✅ All images written to: %s\n", baseDir)
 	return nil
 }
 
