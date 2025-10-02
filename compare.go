@@ -20,7 +20,7 @@ func formatAll(out []float64) string {
 
 func compareSingleModel(modelPath string) {
 	// Load MNIST once
-	images, labels, err := loadMNISTData("./public/mnist")
+	images, labels, err := loadMNISTData(MustPublicPath("mnist"))
 	if err != nil {
 		fmt.Println("❌ Failed to load MNIST:", err)
 		return

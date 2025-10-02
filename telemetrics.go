@@ -192,7 +192,7 @@ func RunTelemetryPipeline(hostBase string, source TelemetrySource) (string, erro
 	}
 
 	// 3) prepare samples: first index per digit (0..9)
-	images, labels, err := loadMNISTData("./public/mnist")
+	images, labels, err := loadMNISTData(MustPublicPath("mnist"))
 	if err != nil {
 		return "", fmt.Errorf("load mnist: %w", err)
 	}

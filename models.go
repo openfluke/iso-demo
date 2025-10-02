@@ -25,7 +25,7 @@ func createModelZoo() {
 	start := time.Now()
 
 	// 1) Ensure output dir
-	modelDir := filepath.Join("public", "models")
+	modelDir := MustPublicPath("models")
 	if err := os.MkdirAll(modelDir, 0755); err != nil {
 		fmt.Printf("❌ Failed to create model dir: %v\n", err)
 		return
@@ -161,10 +161,10 @@ func writeJSON(path string, v any) error {
 
 // ---- Benchmark: run first 0–9 samples through every saved model ----
 func benchmarkModelsOnDigits(withGpu bool) {
-	modelDir := filepath.Join("public", "models")
+	modelDir := MustPublicPath("models")
 
 	// Load dataset once
-	images, labels, err := loadMNISTData("./public/mnist")
+	images, labels, err := loadMNISTData(MustPublicPath("mnist"))
 	if err != nil {
 		fmt.Println("❌ Failed to load MNIST:", err)
 		return

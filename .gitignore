@@ -3,4 +3,6 @@ public/mnist_png
 public/models
 public/compiled
 public/reports
+public/models_remote
+public/reports_local
 distributed_ML_infrastructure_testing_framework.docx

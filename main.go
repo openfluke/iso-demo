@@ -100,7 +100,7 @@ func doRunExperiment() {
 }
 
 func doExportPNGs() {
-	const mnistDir = "./public/mnist"
+	mnistDir := MustPublicPath("mnist")
 	startData := time.Now()
 	images, labels, err := loadMNISTData(mnistDir)
 	if err != nil {
@@ -123,13 +123,13 @@ func doExportPNGs() {
 
 // --- Existing experiment launcher (kept from your code) ---
 func runPilotMNIST() error {
-	mnist := experiments.NewMNISTDatasetStage("./public/mnist")
+	mnist := experiments.NewMNISTDatasetStage(MustPublicPath("mnist"))
 	exp := pilot.NewExperiment("MNIST", mnist)
 	return exp.RunAll()
 }
 
 func runCompareMenu() {
-	modelDir := filepath.Join("public", "models")
+	modelDir := MustPublicPath("models")
 
 	// list models
 	entries, _ := os.ReadDir(modelDir)

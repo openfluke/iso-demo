@@ -17,7 +17,7 @@ import (
 
 func runTrainMenu() {
 	reader := bufio.NewReader(os.Stdin)
-	modelDir := filepath.Join("public", "models")
+	modelDir := MustPublicPath("models")
 
 	// Build model list
 	entries, _ := os.ReadDir(modelDir)
@@ -233,7 +233,7 @@ func withGPU[T paragon.Numeric](nn *paragon.Network[T], warm [][][]float64) (cle
 }
 
 func trainModelEpochs(modelPath string, epochs int, lr float64) error {
-	images, labels, err := loadMNISTData("./public/mnist")
+	images, labels, err := loadMNISTData(MustPublicPath("mnist"))
 	if err != nil {
 		return fmt.Errorf("load MNIST: %w", err)
 	}
@@ -266,7 +266,7 @@ func trainModelEpochs(modelPath string, epochs int, lr float64) error {
 }
 
 func trainModelUntilScore(modelPath string, targetPct float64, maxEpochs int, lr float64) error {
-	images, labels, err := loadMNISTData("./public/mnist")
+	images, labels, err := loadMNISTData(MustPublicPath("mnist"))
 	if err != nil {
 		return fmt.Errorf("load MNIST: %w", err)
 	}

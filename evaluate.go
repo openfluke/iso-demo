@@ -13,7 +13,7 @@ import (
 )
 
 func runEvaluateMenu() {
-	modelDir := filepath.Join("public", "models")
+	modelDir := MustPublicPath("models")
 
 	entries, _ := os.ReadDir(modelDir)
 	models := []string{}
@@ -54,7 +54,7 @@ func runEvaluateMenu() {
 
 func evaluateModelADHD(modelPath string) {
 	// Load dataset
-	images, labels, err := loadMNISTData("./public/mnist")
+	images, labels, err := loadMNISTData(MustPublicPath("mnist"))
 	if err != nil {
 		fmt.Println("❌ Failed to load MNIST:", err)
 		return
