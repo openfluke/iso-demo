@@ -128,6 +128,33 @@ The binaries are placed in `public/compiled/`.
 
 ---
 
+## Building for Windows on Linux (Fedora/RHEL)
+
+To cross-compile your Go project for Windows on a Fedora or RHEL-based Linux distribution, follow these steps. This assumes you have CGO dependencies and need the MinGW toolchain.
+
+### Install the MinGW Toolchain
+
+```bash
+sudo dnf install mingw64-gcc mingw64-gcc-c++
+```
+
+### Set Environment Variables
+
+Tell Go to use the Windows cross-compiler:
+
+```bash
+export CC=x86_64-w64-mingw32-gcc
+export CXX=x86_64-w64-mingw32-g++
+```
+
+### Build the Binary
+
+Enable CGO and cross-compile to Windows:
+
+```bash
+GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -o public/compiled/iso-demo_windows_amd64.exe .
+```
+
 ## Running
 
 Start the demo binary:
