@@ -334,6 +334,12 @@ It’s a **production-grade inference observability pipeline** that most ML team
 
 This is **inference infrastructure engineering** at research quality.
 
+## Manually creating report with python pip install
+
+```
+pip install pandas python-docx matplotlib seaborn numpy
+```
+
 ---
 
 ## License
